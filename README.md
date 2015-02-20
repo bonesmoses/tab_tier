@@ -160,10 +160,11 @@ Configuring pg_tier has been simplified by the introduction of two functions des
 
 There are only a few settings currently that can be modified:
 
-      config_name  | setting  
-    ---------------+----------
-     root_retain   | 3 Months
-     part_period   | 1 Month
+       config_name   |  setting   
+    -----------------+------------
+     root_retain     | 3 Months
+     part_period     | 1 Month
+     part_tablespace | pg_default
 
 In this case, each partition will contain one month of data, and the root table will contain three months before data is moved during maintenance.
 
@@ -176,16 +177,27 @@ Note that this function *does* check the validity of the setting in question. He
     postgres=# SELECT tier.set_tier_config('root_retain', 'cow');
     ERROR:  cow is not an interval!
 
+Here's a map of all currently recognized configuration settings:
+
+Setting | Description
+--- | ---
+root_retain | A PostgreSQL INTERVAL of how long in days to keep data in the root table before moving it to one of the child partitions. Smallest granularity is one day. Default: 3 months.
+part_period | A PostgreSQL INTERVAL dictating the period of time each partition should represent. The smallest granularity is one day. Default: 1 month.
+part_tablespace | Which tablespace should new partitions inhabit? This is in the case pg_tier is used as a pseudo-archival system where a slower tier of storage is used for older partitioned data. Default: pg_default.
+
+While these settings are globally defined for the extension, they can also be changed on an individual basis by setting the `part_tablespace` column in the `tier_root` table for each registered root table.
+
 
 Tables
 ======
 
 The pg_tier extension has a few tables that provide information about its operation and configuration. These tables include:
 
-Table Name | Description
+Setting | Description
 --- | ---
-root_retain | A PostgreSQL INTERVAL of how long in days to keep data in the root table before moving it to one of the child partitions. Smallest granularity is one day. Default: 3 months.
-part_period | A PostgreSQL INTERVAL dictating the period of time each partition should represent. The smallest granularity is one day. Default: 1 months.
+tier_config | Contains all global settings for the module. Modify these with the  `set_tier_config` function.
+tier_root | A table that tracks all registered root tables that should be managed by pg_tier. Partitions will be based on entries here, and configuration overrides can also be changed in this table.
+tier_part | Lists each known partition and its parent root table. Also included are the beginning and ending constraints used to help the PostgreSQL query planner. This information makes it easy to determine the boundaries of each partition without examining each individually.
 
 
 Security
@@ -243,7 +255,7 @@ The `pg_tier` extension has no dependencies other than PostgreSQL.
 Copyright and License
 =====================
 
-Copyright (c) 2014 OptionsHouse
+Copyright (c) 2014 Peak6
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
