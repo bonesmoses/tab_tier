@@ -1,0 +1,4 @@
+# pg_tier extension
+comment = 'Extension for managing date-based job-driven table partitions.'
+default_version = '0.1'
+relocatable = false

@@ -1,0 +1,2 @@
+* Add missing long-term-storage (lts_*) functionality.
+  - Probably require FDW usage, restricting module to 9.3+
