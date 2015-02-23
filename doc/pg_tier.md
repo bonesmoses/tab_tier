@@ -109,7 +109,7 @@ There are clearly more partitions than listed above.
 
 Once the partitions exist, we need to move the data. The pg_tier extension does not provide a function that does this all in one step, because a table being partitioned is likely very large. Waiting for the process to complete may take several hours and any error can derail the process.
 
-However, we do provide a function to handle the data for each individual partition. Let's move the data in the `201301` partition:
+However, we do provide a function to handle the data for each individual partition. Let's move the data in the January 2013 partition. How do we know the partition name? If `part_period` is less than a month, all partition names come in YYYYMMDD format, otherwise they are named with YYYYMM. So in this case, we will use '201301':
 
     SELECT tier.migrate_tier_data('comm', 'yell', '201301');
 
@@ -148,7 +148,56 @@ Then, execute the resulting script with `psql` or pgAdmin. This way if the proce
 
 ### Maintenance
 
-TBA
+Finally, there's partition maintenance. Primarily this will include functions that ensure partition targets exist, and perform data movement on all registered root tables.
+
+Any registered root table will need to have a target partition for relocated data. The tier system does keep track of any partitions that exist, so it won't move data where the target is missing, but that just means the root table slowly grows larger than intended.
+
+This means the `cap_tier_partitions` function should be called regularly. It walks through any tables registered in `tier_root` and creates any missing partitions between the current date and the `root_retain` setting for the table. Simply schedule it to be invoked more often than the `part_period` setting, and a partition will always be available for data. We recommend just calling it every night as part of basic maintenance.
+
+Afterwards comes actually moving the data. The easiest way to do this is to regularly execute the `migrate_all_tiers` function. Like `cap_tier_partitions`, it reads all of the root tables in `root_retain` and uses that to move data from every root table to the most recent partition. The assumption here is that the function is called more often than `part_period` so only the most recent partition is relevant. It also presents status information while working:
+
+    SELECT migrate_all_tiers();
+    
+    NOTICE:   * Copying data to new tier.
+    NOTICE:   * Deleting data from old tier.
+    NOTICE:   * Updating statistics.
+
+If this is ever not the case, we also provide a function for manually moving data, simply rely on the `migrate_tier_data` function as discussed previously.
+
+In some cases, a DBA will need to perform more intrusive maintenance. Due to the way partitions are used in PostgreSQL, object-locking can be an issue since many tables are locked simultaneously when the root table is used in a query. Fortunately there's an easy way to handle this. The `toggle_tier_partitions` function will attach or detach child partitions from a specified root table.
+
+Let's see a few partitions first:
+
+    SELECT c.relname AS child_name
+      FROM pg_class c
+      JOIN pg_inherits i ON (i.inhrelid = c.oid)
+     WHERE i.inhparent = 'comm.yell'::REGCLASS
+     LIMIT 5;
+
+        child_name    
+    ------------------
+     yell_part_201205
+     yell_part_201206
+     yell_part_201207
+     yell_part_201208
+     yell_part_201209
+    (5 rows)
+
+Next, decouple the tables by sending **FALSE**:
+
+    SELECT tier.toggle_tier_partitions('comm', 'yell', FALSE);
+
+    SELECT c.relname AS child_name
+      FROM pg_class c
+      JOIN pg_inherits i ON (i.inhrelid = c.oid)
+     WHERE i.inhparent = 'comm.yell'::REGCLASS
+     LIMIT 5;
+
+     child_name 
+    ------------
+    (0 rows)
+
+This makes it easier to make table alterations to the root table without disturbing child partitions.
 
 
 Configuration
