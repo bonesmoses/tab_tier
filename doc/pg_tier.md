@@ -1,7 +1,7 @@
-pg_tier Extension
+tab_tier Extension
 =======================
 
-The pg_tier module is an extension aimed at promoting simpler table partitioning.
+The tab_tier module is an extension aimed at promoting simpler table partitioning.
 
 The PostgreSQL documentation and existing modules suggest using triggers to redirect inserts from a base table to various child tables. In this style, the base table is empty and all of the child tables actually contain data as defined by `CHECK` constraints. The [pg_partman](http://pgxn.org/dist/pg_partman/doc/pg_partman.html) extension for example, automates managing such a structure.
 
@@ -14,10 +14,10 @@ In addition, we've provided functions to break existing tables into a partitione
 Installation
 ============
 
-To use pg_tier, it must first be installed. Simply execute these commands in the database that needs tier-based functionality:
+To use tab_tier, it must first be installed. Simply execute these commands in the database that needs tier-based functionality:
 
     CREATE SCHEMA tier;
-    CREATE EXTENSION pg_tier WITH SCHEMA tier;
+    CREATE EXTENSION tab_tier WITH SCHEMA tier;
 
 The `tier` schema isn't strictly necessary, but we recommend keeping namespaces isolated.
 
@@ -25,7 +25,7 @@ The `tier` schema isn't strictly necessary, but we recommend keeping namespaces 
 Usage
 =====
 
-The pg_tier extension works by maintaining a base table and all children based on some very simple constraints. Let's make a very basic schema and fake data now:
+The tab_tier extension works by maintaining a base table and all children based on some very simple constraints. Let's make a very basic schema and fake data now:
 
     CREATE SCHEMA comm;
 
@@ -40,7 +40,7 @@ The pg_tier extension works by maintaining a base table and all children based o
            now() - (id || 'd')::INTERVAL
       FROM generate_series(1, 1000) a (id);
 
-That was easy! To use pg_tier, there are four basic steps:
+That was easy! To use tab_tier, there are four basic steps:
 
 * Registration
 * Bootstrapping
@@ -75,7 +75,7 @@ Many of these fields will be explained later, and it's fairly clear the registra
 
 ### Bootstrapping
 
-Next, we need to actually partition the sample table. Effectively, pg_tier will examine the `created_dt` column in `comm.yell` and figure out the minimum and maximum dates. Using the one-month partition period, and three-month retention interval, it will force-distribute any existing data. Any child tables will also have appropriate check constraints added to satisfy PostgreSQL's constraint exclusion performance tweak.
+Next, we need to actually partition the sample table. Effectively, tab_tier will examine the `created_dt` column in `comm.yell` and figure out the minimum and maximum dates. Using the one-month partition period, and three-month retention interval, it will force-distribute any existing data. Any child tables will also have appropriate check constraints added to satisfy PostgreSQL's constraint exclusion performance tweak.
 
 This function call should do the trick:
 
@@ -107,7 +107,7 @@ There are clearly more partitions than listed above.
 
 ### Migration
 
-Once the partitions exist, we need to move the data. The pg_tier extension does not provide a function that does this all in one step, because a table being partitioned is likely very large. Waiting for the process to complete may take several hours and any error can derail the process.
+Once the partitions exist, we need to move the data. The tab_tier extension does not provide a function that does this all in one step, because a table being partitioned is likely very large. Waiting for the process to complete may take several hours and any error can derail the process.
 
 However, we do provide a function to handle the data for each individual partition. Let's move the data in the January 2013 partition. How do we know the partition name? If `part_period` is less than a month, all partition names come in YYYYMMDD format, otherwise they are named with YYYYMM. So in this case, we will use '201301':
 
@@ -203,7 +203,7 @@ This makes it easier to make table alterations to the root table without disturb
 Configuration
 =============
 
-Configuring pg_tier has been simplified by the introduction of two functions designed to handle setting validation and other internals. To see all settings at once, execute this query to examine the contents of the `tier_config` table.
+Configuring tab_tier has been simplified by the introduction of two functions designed to handle setting validation and other internals. To see all settings at once, execute this query to examine the contents of the `tier_config` table.
 
     SELECT config_name, setting FROM tier.tier_config;
 
@@ -232,7 +232,7 @@ Setting | Description
 --- | ---
 root_retain | A PostgreSQL INTERVAL of how long in days to keep data in the root table before moving it to one of the child partitions. Smallest granularity is one day. Default: 3 months.
 part_period | A PostgreSQL INTERVAL dictating the period of time each partition should represent. The smallest granularity is one day. Default: 1 month.
-part_tablespace | Which tablespace should new partitions inhabit? This is in the case pg_tier is used as a pseudo-archival system where a slower tier of storage is used for older partitioned data. Default: pg_default.
+part_tablespace | Which tablespace should new partitions inhabit? This is in the case tab_tier is used as a pseudo-archival system where a slower tier of storage is used for older partitioned data. Default: pg_default.
 
 While these settings are globally defined for the extension, they can also be changed on an individual basis by setting the `part_tablespace` column in the `tier_root` table for each registered root table.
 
@@ -240,19 +240,19 @@ While these settings are globally defined for the extension, they can also be ch
 Tables
 ======
 
-The pg_tier extension has a few tables that provide information about its operation and configuration. These tables include:
+The tab_tier extension has a few tables that provide information about its operation and configuration. These tables include:
 
 Setting | Description
 --- | ---
 tier_config | Contains all global settings for the module. Modify these with the  `set_tier_config` function.
-tier_root | A table that tracks all registered root tables that should be managed by pg_tier. Partitions will be based on entries here, and configuration overrides can also be changed in this table.
+tier_root | A table that tracks all registered root tables that should be managed by tab_tier. Partitions will be based on entries here, and configuration overrides can also be changed in this table.
 tier_part | Lists each known partition and its parent root table. Also included are the beginning and ending constraints used to help the PostgreSQL query planner. This information makes it easy to determine the boundaries of each partition without examining each individually.
 
 
 Security
 ========
 
-Due to its low-level operation, pg_tier works best when executed by a database superuser. However, we understand this is undesirable in many cases. Certain pg_tier capabilities can be assigned to other users by calling `add_tier_admin`. For example:
+Due to its low-level operation, tab_tier works best when executed by a database superuser. However, we understand this is undesirable in many cases. Certain tab_tier capabilities can be assigned to other users by calling `add_tier_admin`. For example:
 
     CREATE ROLE tier_role;
     SELECT tier.add_tier_admin('tier_role');
@@ -268,7 +268,7 @@ Build Instructions
 
 To build it, just do this:
 
-    cd pg_tier
+    cd tab_tier
     make
     sudo make install
 
@@ -298,7 +298,7 @@ subdirectory of the PostgreSQL source tree and try it there without
 Dependencies
 ============
 
-The `pg_tier` extension has no dependencies other than PostgreSQL.
+The `tab_tier` extension has no dependencies other than PostgreSQL.
 
 
 Copyright and License

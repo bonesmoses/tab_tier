@@ -1,2 +1,4 @@
 Version 0.1 - Fri, 20 Feb 2015 08:15:55 -0600
   - Initial release
+Version 0.2 - Wed, 04 Nov 2015 15:30:43 -0600
+  - Renamed to tab_tier to avoid collisions with official pg_* names.

@@ -12,7 +12,7 @@
  * data ushering between partition segments.
  */
 
-\echo Use "CREATE EXTENSION pg_tier;" to load this file. \quit
+\echo Use "CREATE EXTENSION tab_tier;" to load this file. \quit
 
 --------------------------------------------------------------------------------
 -- PREPARE EXTENSION
@@ -85,11 +85,11 @@ ALTER TABLE tier_part
 --------------------------------------------------------------------------------
 
 /**
- * Register a user who is allowed to use or access pg_tier objects.
+ * Register a user who is allowed to use or access tab_tier objects.
  *
- * Because pg_tier requires several management functions, granting usage is
+ * Because tab_tier requires several management functions, granting usage is
  * somewhat cumbersome. This function exists as a shortcut for the user who
- * created the pg_tier extension to hand management to other users.
+ * created the tab_tier extension to hand management to other users.
  * Functions for this include:
  *
  *  - bootstrap_tier_parts
@@ -390,7 +390,7 @@ REVOKE EXECUTE
 
 
 /**
- * Remove a user or role who was allowed to use pg_tier.
+ * Remove a user or role who was allowed to use tab_tier.
  *
  * This is the functional analog to add_tier_admin. Calling this function
  * will remove a user or role from the list of those allowed to invoke tier
@@ -961,7 +961,7 @@ REVOKE EXECUTE
 
 
 /**
- * Set a Configuration Setting from pg_tier.
+ * Set a Configuration Setting from tab_tier.
  *
  * This function doesn't just set values. It also acts as an API for
  * checking setting validity. These settings are specifically adjusted:
@@ -1105,15 +1105,15 @@ REVOKE EXECUTE
 
 
 /**
- * Remove a table/schema pair from the pg_tier system.
+ * Remove a table/schema pair from the tab_tier system.
  *
- * This function simplifies removing tables from pg_tier. Tables removed
+ * This function simplifies removing tables from tab_tier. Tables removed
  * with this function will no longer have data moved by any functions
  * used by this extension. Otherwise, no modifications will be made to
  * the tables themselves.
  *
  * @param table_schema  String name of the schema for this table.
- * @param target_table  String name of the *base* table to remove from pg_tier;
+ * @param target_table  String name of the *base* table to remove from tab_tier;
  *     all child tables will also be unregistered.
  */
 CREATE OR REPLACE FUNCTION unregister_table(
