@@ -16,17 +16,37 @@
 SET client_min_messages = warning;
 
 --------------------------------------------------------------------------------
--- CONFIGURE EXTENSION
+-- CREATE EXTENSION USER
 --------------------------------------------------------------------------------
 
-SET @extschema@.root_retain TO '3 months';
-SET @extschema@.part_period TO '1 month';
-SET @extschema@.part_tablespace TO 'pg_default';
-SET @extschema@.lts_threshold TO '2 years';
+DO $$
+BEGIN
+  PERFORM 1
+    FROM pg_roles
+   WHERE rolname = 'tab_tier_role';
+
+  IF NOT FOUND THEN
+    EXECUTE 'CREATE ROLE tab_tier_role';
+  END IF;
+END;
+$$ LANGUAGE plpgsql;
 
 --------------------------------------------------------------------------------
 -- CREATE TABLES
 --------------------------------------------------------------------------------
+
+CREATE TABLE tier_config
+(
+  config_id    SERIAL     NOT NULL  PRIMARY KEY,
+  config_name  VARCHAR    NOT NULL  UNIQUE,
+  setting      VARCHAR    NOT NULL,
+  is_default   BOOLEAN    NOT NULL  DEFAULT False,
+  created_dt   TIMESTAMP  NOT NULL  DEFAULT now(),
+  modified_dt  TIMESTAMP  NOT NULL  DEFAULT now()
+);
+
+SELECT pg_catalog.pg_extension_config_dump('tier_config',
+  'WHERE NOT is_default');
 
 CREATE TABLE tier_root
 (
@@ -73,102 +93,6 @@ ALTER TABLE tier_part
 --------------------------------------------------------------------------------
 -- CREATE FUNCTIONS
 --------------------------------------------------------------------------------
-
-/**
- * Register a user who is allowed to use or access tab_tier objects.
- *
- * Because tab_tier requires several management functions, granting usage is
- * somewhat cumbersome. This function exists as a shortcut for the user who
- * created the tab_tier extension to hand management to other users.
- * Functions for this include:
- *
- *  - bootstrap_tier_parts
- *  - cap_tier_partitions
- *  - extend_tier_root
- *  - initialize_tier_part
- *  - migrate_all_tiers
- *  - migrate_tier_data
- *  - register_tier_root
- *  - toggle_tier_partitions
- *  - unregister_table
- *
- * Table select permission includes:
- *
- *  - tier_root
- *  - tier_part
- *
- * We suggest using a role for "admin" class users to avoid micromanagement.
- *
- * @param user_name  String user or role to delegate as tier admin.
- */
-CREATE OR REPLACE FUNCTION add_tier_admin(
-  db_role  VARCHAR
-)
-RETURNS VOID AS
-$$
-BEGIN
-  EXECUTE '
-  GRANT USAGE
-     ON SCHEMA @extschema@
-     TO ' || quote_ident(db_role);
-
-  EXECUTE '
-  GRANT EXECUTE
-     ON FUNCTION @extschema@.bootstrap_tier_parts(VARCHAR, VARCHAR)
-     TO ' || quote_ident(db_role);
-
-  EXECUTE '
-  GRANT EXECUTE
-     ON FUNCTION @extschema@.cap_tier_partitions()
-     TO ' || quote_ident(db_role);
-
-  EXECUTE '
-  GRANT EXECUTE
-     ON FUNCTION @extschema@.extend_tier_root(VARCHAR, VARCHAR)
-     TO ' || quote_ident(db_role);
-
-  EXECUTE '
-  GRANT EXECUTE
-     ON FUNCTION @extschema@.initialize_tier_part(VARCHAR, VARCHAR, VARCHAR)
-     TO ' || quote_ident(db_role);
-
-  EXECUTE '
-  GRANT EXECUTE
-     ON FUNCTION @extschema@.migrate_all_tiers()
-     TO ' || quote_ident(db_role);
-
-  EXECUTE '
-  GRANT EXECUTE
-     ON FUNCTION @extschema@.migrate_tier_data(VARCHAR, VARCHAR, VARCHAR)
-     TO ' || quote_ident(db_role);
-
-  EXECUTE '
-  GRANT EXECUTE
-     ON FUNCTION @extschema@.register_tier_root(VARCHAR, VARCHAR, VARCHAR)
-     TO ' || quote_ident(db_role);
-
-  EXECUTE '
-  GRANT EXECUTE
-     ON FUNCTION @extschema@.toggle_tier_partitions(VARCHAR, VARCHAR, BOOLEAN)
-     TO ' || quote_ident(db_role);
-
-  EXECUTE '
-  GRANT EXECUTE
-     ON FUNCTION @extschema@.unregister_table(VARCHAR, VARCHAR)
-     TO ' || quote_ident(db_role);
-
-  EXECUTE '
-  GRANT SELECT
-     ON TABLE @extschema@.tier_root
-     TO ' || quote_ident(db_role);
-
-  EXECUTE '
-  GRANT SELECT
-     ON TABLE @extschema@.tier_part
-     TO ' || quote_ident(db_role);
-
-END;
-$$ LANGUAGE PLPGSQL SECURITY DEFINER;
 
 /**
 * Create all necessary partitions for a new tier root
@@ -346,100 +270,6 @@ $$ LANGUAGE plpgsql VOLATILE;
 
 
 /**
- * Remove a user or role who was allowed to use tab_tier.
- *
- * This is the functional analog to add_tier_admin. Calling this function
- * will remove a user or role from the list of those allowed to invoke tier
- * management routines. Functions permissions removed:
- *
- *  - bootstrap_tier_parts
- *  - cap_tier_partitions
- *  - extend_tier_root
- *  - initialize_tier_part
- *  - migrate_all_tiers
- *  - migrate_tier_data
- *  - register_tier_root
- *  - toggle_tier_partitions
- *  - unregister_table
- *
- * Table select permission removed:
- *
- *  - tier_table
- *  - tier_map
- *
- * @param db_role  String user or role to remove as tier admin.
- */
-CREATE OR REPLACE FUNCTION drop_tier_admin(
-  db_role  VARCHAR
-)
-RETURNS VOID AS
-$$
-BEGIN
-  EXECUTE '
-  REVOKE USAGE
-      ON SCHEMA @extschema@
-    FROM ' || quote_ident(db_role);
-
-  EXECUTE '
-  REVOKE EXECUTE
-      ON FUNCTION @extschema@.bootstrap_tier_parts(VARCHAR, VARCHAR)
-    FROM ' || quote_ident(db_role);
-
-  EXECUTE '
-  REVOKE EXECUTE
-      ON FUNCTION @extschema@.cap_tier_partitions()
-    FROM ' || quote_ident(db_role);
-
-  EXECUTE '
-  REVOKE EXECUTE
-      ON FUNCTION @extschema@.extend_tier_root(VARCHAR, VARCHAR)
-    FROM ' || quote_ident(db_role);
-
-  EXECUTE '
-  REVOKE EXECUTE
-      ON FUNCTION @extschema@.initialize_tier_part(VARCHAR, VARCHAR, VARCHAR)
-    FROM ' || quote_ident(db_role);
-
-  EXECUTE '
-  REVOKE EXECUTE
-      ON FUNCTION @extschema@.migrate_all_tiers()
-    FROM ' || quote_ident(db_role);
-
-  EXECUTE '
-  REVOKE EXECUTE
-      ON FUNCTION @extschema@.migrate_tier_data(VARCHAR, VARCHAR, VARCHAR)
-    FROM ' || quote_ident(db_role);
-
-  EXECUTE '
-  REVOKE EXECUTE
-      ON FUNCTION @extschema@.register_tier_root(VARCHAR, VARCHAR, VARCHAR)
-    FROM ' || quote_ident(db_role);
-
-  EXECUTE '
-  REVOKE EXECUTE
-      ON FUNCTION @extschema@.toggle_tier_partitions(VARCHAR, VARCHAR, BOOLEAN)
-    FROM ' || quote_ident(db_role);
-
-  EXECUTE '
-  REVOKE EXECUTE
-      ON FUNCTION @extschema@.unregister_table(VARCHAR, VARCHAR)
-    FROM ' || quote_ident(db_role);
-
-  EXECUTE '
-  REVOKE ALL
-      ON TABLE @extschema@.tier_map
-    FROM ' || quote_ident(db_role);
-
-  EXECUTE '
-  REVOKE ALL
-      ON TABLE @extschema@.tier_table
-    FROM ' || quote_ident(db_role);
-
-END;
-$$ LANGUAGE PLPGSQL SECURITY DEFINER;
-
-
-/**
 * Creates a new partition extension based on root table.
 *
 * This procedure will add one extent of part_period length to an existing
@@ -556,6 +386,26 @@ BEGIN
 
 END;
 $$ LANGUAGE plpgsql VOLATILE;
+
+
+/**
+ * Retrieve a Configuration Setting from tier_config.
+ *
+ * @param config_key  Name of the configuration setting to retrieve.
+ *
+ * @return TEXT  Value for the requested configuration setting.
+ */
+CREATE OR REPLACE FUNCTION get_tier_config(
+  config_key  VARCHAR
+)
+RETURNS TEXT AS
+$$
+BEGIN
+  RETURN (SELECT setting
+    FROM @extschema@.tier_config
+   WHERE config_name = config_key);
+END;
+$$ LANGUAGE PLPGSQL SECURITY DEFINER;
 
 
 /**
@@ -703,6 +553,7 @@ DECLARE
   rPart @extschema@.tier_part%ROWTYPE;
 
   sColList VARCHAR;
+  nCount BIGINT;
 BEGIN
 
   RAISE NOTICE 'Migrating Older % Data', sTable;
@@ -773,22 +624,45 @@ BEGIN
         AND ' || quote_ident(rRoot.date_column) || ' < CURRENT_DATE - ' ||
                  quote_literal(rRoot.root_retain::text) || '::interval';
 
-  -- Once the rows are copied, it should be safe to delete them from the
+  -- Here is where we'll insert an optimization shortcut. If all the rows
+  -- we copied are the *only* rows to move, we can truncate the root table
+  -- immediately and skip the slow delete operation.
+
+  EXECUTE
+    'SELECT count(*)
+       FROM ONLY ' || quote_ident(sSchema) || '.' || quote_ident(sTable) || '
+      WHERE ' || quote_ident(rRoot.date_column) || ' < ' ||
+                 quote_literal(rPart.check_start::text) || '
+        AND ' || quote_ident(rRoot.date_column) || ' >= ' ||
+                 quote_literal(rPart.check_stop::text) || '
+        AND ' || quote_ident(rRoot.date_column) || ' >= CURRENT_DATE - ' ||
+                 quote_literal(rRoot.root_retain::text) || '::interval'
+    INTO nCount;
+
+  IF nCount < 1 THEN
+    RAISE NOTICE ' * Truncating data from old tier.';
+
+    EXECUTE 'TRUNCATE TABLE ONLY ' || quote_ident(sSchema) || '.' || 
+            quote_ident(sTable);
+
+  -- Or, once the rows are copied, it should be safe to delete them from the
   -- source. Since all children inherit from the main table, we want to
   -- *ensure* to use the ONLY keyword so we don't delete from all of the
   -- other partitions as well.
 
-  RAISE NOTICE ' * Deleting data from old tier.';
+  ELSE 
+    RAISE NOTICE ' * Deleting data from old tier.';
 
-  EXECUTE
-    'DELETE FROM
-       ONLY ' || quote_ident(sSchema) || '.' || quote_ident(sTable) || '
-      WHERE ' || quote_ident(rRoot.date_column) || ' >= ' ||
-                 quote_literal(rPart.check_start::text) || '
-        AND ' || quote_ident(rRoot.date_column) || ' < ' ||
-                 quote_literal(rPart.check_stop::text) || '
-        AND ' || quote_ident(rRoot.date_column) || ' < CURRENT_DATE - ' ||
-                 quote_literal(rRoot.root_retain::text) || '::interval';
+    EXECUTE
+      'DELETE FROM
+         ONLY ' || quote_ident(sSchema) || '.' || quote_ident(sTable) || '
+        WHERE ' || quote_ident(rRoot.date_column) || ' >= ' ||
+                   quote_literal(rPart.check_start::text) || '
+          AND ' || quote_ident(rRoot.date_column) || ' < ' ||
+                   quote_literal(rPart.check_stop::text) || '
+          AND ' || quote_ident(rRoot.date_column) || ' < CURRENT_DATE - ' ||
+                   quote_literal(rRoot.root_retain::text) || '::interval';
+  END IF;
 
   -- Last but not least, analyze our source table because we probably
   -- invalidated the last collected statistics.
@@ -827,10 +701,10 @@ DECLARE
   sStorage  TEXT;
 BEGIN
 
-  SHOW @extschema@.root_retain INTO dRetain;
-  SHOW @extschema@.part_period INTO dPeriod;
-  SHOW @extschema@.lts_threshold INTO dThresh;
-  SHOW @extschema@.part_tablespace INTO sStorage;
+  dRetain = @extschema@.get_tier_config('root_retain');
+  dPeriod = @extschema@.get_tier_config('part_period');
+  dThresh = @extschema@.get_tier_config('lts_threshold');
+  sStorage = @extschema@.get_tier_config('part_tablespace');
 
   -- Check for this schema/table/column combination, to save us from having to
   -- trap an exception.
@@ -848,6 +722,86 @@ BEGIN
 
 END;
 $$ LANGUAGE plpgsql VOLATILE;
+
+
+/**
+ * Set a Configuration Setting from tab_tier.
+ *
+ * This function doesn't just set values. It also acts as an API for
+ * checking setting validity. These settings are specifically adjusted:
+ *
+ *  - root_retain : Must be able to convert to a PostgreSQL INTERVAL type.
+ *  - lts_threshold : Must be able to convert to a PostgreSQL INTERVAL type.
+ *  - part_period : Must be able to convert to a PostgreSQL INTERVAL type.
+ *
+ * All settings will be folded to lower case for consistency.
+ *
+ * @param config_key  Name of the configuration setting to retrieve.
+ * @param config_val  full value to use for the specified setting.
+ *
+ * @return TEXT  Value for the created/modified configuration setting.
+ */
+CREATE OR REPLACE FUNCTION set_tier_config(
+  config_key  VARCHAR,
+  config_val  VARCHAR
+)
+RETURNS TEXT AS
+$$
+DECLARE
+  new_val   VARCHAR := config_val;
+  low_key   VARCHAR := lower(config_key);
+  info_msg  VARCHAR;
+BEGIN
+  -- If this is a new setting we don't control, just set it and ignore it.
+  -- The admin may be storing personal notes. Any settings required by the
+  -- extension should already exist by this point.
+
+  PERFORM 1 FROM @extschema@.tier_config WHERE config_name = low_key;
+
+  IF NOT FOUND THEN
+    INSERT INTO @extschema@.tier_config (config_name, setting)
+    VALUES (low_key, new_val);
+
+    RETURN new_val;
+  END IF;
+
+  -- Don't let the user choose a tablespace that doesn't exist.
+
+  IF low_key = 'part_tablespace' THEN
+    PERFORM 1 FROM pg_tablespace WHERE spcname = config_val;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION '% is not a valid tablespace!', config_val;
+      RETURN NULL;
+    END IF;
+  END IF;
+
+  -- Make sure all of the INTERVAL types are actually intervals.
+
+  IF low_key IN ('root_retain', 'lts_threshold', 'part_period') THEN
+    BEGIN
+      PERFORM config_val::INTERVAL;
+    EXCEPTION
+      WHEN OTHERS THEN
+        RAISE EXCEPTION '% is not an interval!', config_val;
+        RETURN NULL;
+    END;
+  END IF;
+
+  -- With the data filtered, it's now safe to modify the config table.
+  -- Also set the default to false so non-default settings are retained
+  -- in dumps.
+
+  UPDATE @extschema@.tier_config
+     SET setting = new_val,
+         is_default = False
+   WHERE config_name = low_key;
+
+  -- Finally, return the value of the setting, indicating it was accepted.
+
+  RETURN new_val;
+
+END;
+$$ LANGUAGE PLPGSQL SECURITY DEFINER;
 
 
 /**
@@ -980,7 +934,20 @@ BEFORE INSERT OR UPDATE ON tier_part
    FOR EACH ROW EXECUTE PROCEDURE update_audit_stamps();
 
 --------------------------------------------------------------------------------
--- CONFIGURE EXTENSION
+-- GRANT USAGE
 --------------------------------------------------------------------------------
 
 REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA @extschema@ FROM PUBLIC;
+GRANT ALL ON ALL TABLES IN SCHEMA @extschema@ TO tab_tier_role;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA @extschema@ TO tab_tier_role;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA @extschema@ TO tab_tier_role;
+
+--------------------------------------------------------------------------------
+-- CONFIGURE EXTENSION
+--------------------------------------------------------------------------------
+
+INSERT INTO tier_config (config_name, setting, is_default) VALUES
+  ('root_retain', '3 Months', True),
+  ('lts_threshold', '2 years', True),
+  ('part_period', '1 Month', True),
+  ('part_tablespace', 'pg_default', TRUE);
