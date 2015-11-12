@@ -157,7 +157,8 @@ BEGIN
 
   dCurrent = dStart;
 
-  WHILE dCurrent < CURRENT_DATE - rRoot.root_retain + rRoot.part_period LOOP
+  WHILE dCurrent <= CURRENT_DATE - rRoot.root_retain + rRoot.part_period
+  LOOP
     PERFORM @extschema@.extend_tier_root(sSchema, sTable);
     dCurrent = dCurrent + rRoot.part_period;
   END LOOP;
@@ -630,13 +631,7 @@ BEGIN
 
   EXECUTE
     'SELECT count(*)
-       FROM ONLY ' || quote_ident(sSchema) || '.' || quote_ident(sTable) || '
-      WHERE ' || quote_ident(rRoot.date_column) || ' < ' ||
-                 quote_literal(rPart.check_start::text) || '
-        AND ' || quote_ident(rRoot.date_column) || ' >= ' ||
-                 quote_literal(rPart.check_stop::text) || '
-        AND ' || quote_ident(rRoot.date_column) || ' >= CURRENT_DATE - ' ||
-                 quote_literal(rRoot.root_retain::text) || '::interval'
+       FROM ONLY ' || quote_ident(sSchema) || '.' || quote_ident(sTable)
     INTO nCount;
 
   IF nCount < 1 THEN
