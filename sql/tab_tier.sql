@@ -212,11 +212,80 @@ BEGIN
              r.root_retain - r.part_period - INTERVAL '1 day'
   LOOP
     BEGIN
-      PERFORM @extschema@.extend_tier_root(sSchema, sTable);
+      PERFORM @extschema@.extend_tier_root(sSchema, sTable, FALSE);
     EXCEPTION WHEN OTHERS THEN
       RAISE WARNING 'Problem encountered extending %! Skipping.', sTable;
       CONTINUE;
     END;
+  END LOOP;
+
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+
+/**
+* Copy all indexes from one table to another.
+*
+* When making a copy of a table, much is lost. Among them are indexes,
+* which is actually partually beneficial. This allows us to fill a table
+* copy and apply the indexes last to optimize creation time.
+*
+* @param string  Name of Schema where source objects can be found.
+* @param string  Name of the source table for indexes.
+* @param string  Name of schema containing the target table for the indexes.
+* @param string  Name of target table for indexes.
+*/
+CREATE OR REPLACE FUNCTION _copy_indexes(VARCHAR, VARCHAR, VARCHAR, 
+                                           VARCHAR)
+RETURNS VOID AS $$
+DECLARE
+  sSchema     ALIAS FOR $1;
+  sSource     ALIAS FOR $2;
+  sNSPTarget  ALIAS FOR $3;
+  sTarget     ALIAS FOR $4;
+
+  rIndex RECORD;
+  sIndex VARCHAR;
+  nCounter INT := 1;
+BEGIN
+
+  -- Cascade every known index from the source table to the target.
+  -- This should not include primary keys because we may have manually added
+  -- such a beast with a constraint cascade. The only exception is the
+  -- partition column.
+
+  FOR rIndex IN SELECT pg_get_indexdef(i.oid) AS indexdef, x.indisprimary,
+                       CASE WHEN x.indisunique = True
+                            THEN 'u' ELSE 'i' END AS indtype
+                  FROM pg_index x
+                  JOIN pg_class c ON (c.oid = x.indrelid)
+                  JOIN pg_class i ON (i.oid = x.indexrelid)
+                  JOIN pg_namespace n ON (n.oid = c.relnamespace)
+                 WHERE n.nspname = sSchema
+                   AND c.relname = sSource
+                 GROUP BY 1, 2, 3
+  LOOP
+
+    -- Generate an index name that isn't *quite* as long, since all child
+    -- tables will have a bunch of extra cruft added that might get
+    -- truncated.
+
+    sIndex = rIndex.indtype || 'dx_' || 
+             regexp_replace(sTarget, E'([a-z]{1,4})[a-z]*?_?',
+                            E'\\1_', 'ig') || nCounter;
+
+    rIndex.indexdef = regexp_replace(rIndex.indexdef,
+      E'INDEX [\\w\\.]+ ',
+      E'INDEX ' || sIndex || ' ');
+
+    rIndex.indexdef = regexp_replace(rIndex.indexdef,
+      E' ON [\\w\\.]+ ',
+      ' ON ' || sNSPTarget || '.' || sTarget || ' ');
+
+    EXECUTE rIndex.indexdef;
+    
+    nCounter := nCounter + 1;
+    
   END LOOP;
 
 END;
@@ -285,12 +354,14 @@ $$ LANGUAGE plpgsql VOLATILE;
 * This function may be called in rapid succession by maintenance processes
 * that are attempting to ensure migrated data always has a valid target.
 *
-* @param string  Schema name of root table being extended.
-* @param string  Table Name of root table being extended.
+* @param string   Schema name of root table being extended.
+* @param string   Table Name of root table being extended.
+* @param boolean  Should we *only* create partitions without moving data?
 */
 CREATE OR REPLACE FUNCTION extend_tier_root(
-  sSchema   VARCHAR,
-  sTable    VARCHAR
+  sSchema  VARCHAR,
+  sTable   VARCHAR,
+  bFast    BOOLEAN DEFAULT TRUE
 )
 RETURNS VOID AS $$
 DECLARE
@@ -339,6 +410,15 @@ BEGIN
 
   sPartName = sTable || '_part_' || to_char(dStart, sMask);
 
+  -- Create an entry into our configuration / tracking table for this
+  -- partition. If there is a problem, this will be rolled back in the
+  -- transaction.
+
+  INSERT INTO @extschema@.tier_part (tier_root_id, part_schema, part_table,
+          check_start, check_stop)
+  VALUES (rRoot.tier_root_id, sSchema, sPartName, dStart,
+          dStart + rRoot.part_period);
+
   -- Go ahead and create the table. It'll be based on the root table so we
   -- can copy indexes and table/column comments. We won't include any
   -- constraints, as those were presumably checked in the base table when
@@ -346,44 +426,76 @@ BEGIN
   -- be re-added. Otherwise, this is just a check-constraint table inheritance
   -- pattern on our root interval.
 
-  EXECUTE '
-    CREATE TABLE ' || quote_ident(sSchema) || '.' || quote_ident(sPartName) || '
-    (
-      snapshot_dt TIMESTAMP WITHOUT TIME ZONE NOT NULL,
-      CHECK (' || quote_ident(rRoot.date_column) || ' >= ' ||
-                  quote_literal(dStart::text) || '
-        AND ' || quote_ident(rRoot.date_column) || ' < ' ||
-                 quote_literal((dStart + rRoot.part_period)::text) || '),
-      LIKE ' || quote_ident(sSchema) || '.' || quote_ident(sTable) || '
-      INCLUDING INDEXES INCLUDING COMMENTS
-    ) INHERITS (' || quote_ident(sSchema) || '.' || quote_ident(sTable) || ')
-    TABLESPACE ' || rRoot.part_tablespace;
+  -- There's an interesting optimization we can perform if the partition
+  -- period as at the minimum possible level. When a new partition is created,
+  -- we can take advantage of the fact the day is new, and copy data without
+  -- indexes, which is much faster than otherwise. If the partition already
+  -- exists, copies will work normally. This might not invoke often, but it can
+  -- be helpful when it does.
 
-  -- Next, we should move the indexes to the proper tablespace as well, as
-  -- that's one thing that doesn't get inherited.
+  IF NOT bFast AND rRoot.part_period <= INTERVAL '1 day' THEN
+    EXECUTE '
+      CREATE TABLE ' || quote_ident(sSchema) || '.' || quote_ident(sPartName) || '
+      (
+        snapshot_dt TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+        LIKE ' || quote_ident(sSchema) || '.' || quote_ident(sTable) || '
+        INCLUDING COMMENTS
+      ) INHERITS (' || quote_ident(sSchema) || '.' || quote_ident(sTable) || ')
+      TABLESPACE ' || rRoot.part_tablespace;
 
-  FOR sIndex IN
-      SELECT indexname
-        FROM pg_indexes
-       WHERE schemaname = sSchema
-         AND tablename = sPartName
-  LOOP
-    EXECUTE
-      'ALTER INDEX ' || quote_ident(sSchema) || '.' || quote_ident(sIndex) ||
-      '  SET TABLESPACE ' || quote_ident(rRoot.part_tablespace);
-  END LOOP;
+    PERFORM @extschema@.migrate_tier_data(
+        sSchema, sTable, to_char(dStart, sMask)
+    );
+
+    EXECUTE '
+      ALTER TABLE ' || quote_ident(sSchema) || '.' || quote_ident(sPartName) || '
+        ADD CONSTRAINT ' || quote_ident(sPartName) || '_' || quote_ident(rRoot.date_column) || '_check ' || '
+        CHECK (' || quote_ident(rRoot.date_column) || ' >= ' ||
+                    quote_literal(dStart::text) || '
+          AND ' || quote_ident(rRoot.date_column) || ' < ' ||
+                   quote_literal((dStart + rRoot.part_period)::text) || ')';
+
+    PERFORM @extschema@._copy_indexes(
+        sSchema, sTable, sSchema, sPartName
+    );
+
+  -- If we can't do the "optimized" extension, the standard partition creation
+  -- will work just fine. There's nothing wrong with it, it's just not as fast
+  -- as the minimal granularity level makes possible.
+
+  ELSE
+    EXECUTE '
+      CREATE TABLE ' || quote_ident(sSchema) || '.' || quote_ident(sPartName) || '
+      (
+        snapshot_dt TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+        CHECK (' || quote_ident(rRoot.date_column) || ' >= ' ||
+                    quote_literal(dStart::text) || '
+          AND ' || quote_ident(rRoot.date_column) || ' < ' ||
+                   quote_literal((dStart + rRoot.part_period)::text) || '),
+        LIKE ' || quote_ident(sSchema) || '.' || quote_ident(sTable) || '
+        INCLUDING INDEXES INCLUDING COMMENTS
+      ) INHERITS (' || quote_ident(sSchema) || '.' || quote_ident(sTable) || ')
+      TABLESPACE ' || rRoot.part_tablespace;
+
+    -- Next, we should move the indexes to the proper tablespace as well, as
+    -- that's one thing that doesn't get inherited.
+
+    FOR sIndex IN
+        SELECT indexname
+          FROM pg_indexes
+         WHERE schemaname = sSchema
+           AND tablename = sPartName
+    LOOP
+      EXECUTE
+        'ALTER INDEX ' || quote_ident(sSchema) || '.' || quote_ident(sIndex) ||
+        '  SET TABLESPACE ' || quote_ident(rRoot.part_tablespace);
+    END LOOP;
+
+  END IF;
 
   -- Last but not least, copy the grants of our parent table.
 
   PERFORM @extschema@._copy_grants(sSchema, sTable, sSchema, sPartName);
-
-  -- Now that we've created the partition, go ahead and record everything
-  -- for posterity in our tracking table.
-
-  INSERT INTO @extschema@.tier_part (tier_root_id, part_schema, part_table,
-          check_start, check_stop)
-  VALUES (rRoot.tier_root_id, sSchema, sPartName, dStart,
-          dStart + rRoot.part_period);
 
 END;
 $$ LANGUAGE plpgsql VOLATILE;
@@ -577,21 +689,11 @@ BEGIN
   -- partition that's just slightly older than root_retain. Otherwise, we
   -- were asked to target a specific partition, and we want its information.
 
-  IF sPart IS NULL THEN
-    SELECT INTO rPart *
-      FROM @extschema@.tier_part
-     WHERE tier_root_id = rRoot.tier_root_id
-       AND check_start <= CURRENT_DATE - rRoot.root_retain
-       AND check_stop > CURRENT_DATE - rRoot.root_retain
-     ORDER BY check_stop DESC
-     LIMIT 1;
-  ELSE
-    SELECT INTO rPart *
-      FROM @extschema@.tier_part
-     WHERE tier_root_id = rRoot.tier_root_id
-       AND part_table = sTable || '_part_' || 
+  SELECT INTO rPart *
+    FROM @extschema@.tier_part
+   WHERE tier_root_id = rRoot.tier_root_id
+     AND part_table = sTable || '_part_' || 
                         regexp_replace(sPart, '\D', '', 'g');
-  END IF;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Could not data shift (%). Partition missing.',
@@ -794,6 +896,32 @@ BEGIN
   -- Finally, return the value of the setting, indicating it was accepted.
 
   RETURN new_val;
+
+END;
+$$ LANGUAGE PLPGSQL SECURITY DEFINER;
+
+
+/**
+* Do an atomic tier swap to prevent delete/insert bloat on tier tables
+*
+* 
+*
+* @param string  Schema name of root table having data migrated.
+* @param string  Table Name of root table having data migrated.
+* @param string  Optional specific partition to target, root table and
+*                partition prefix removed. Ex: 201304
+*/
+CREATE OR REPLACE FUNCTION swap_current_tier(
+  sSchema   VARCHAR,
+  sTable    VARCHAR
+)
+RETURNS VOID AS $$
+DECLARE
+  rRoot @extschema@.tier_root%ROWTYPE;
+  rPart @extschema@.tier_part%ROWTYPE;
+BEGIN
+
+  PERFORM 1;
 
 END;
 $$ LANGUAGE PLPGSQL SECURITY DEFINER;
