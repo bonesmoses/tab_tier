@@ -340,6 +340,132 @@ $$ LANGUAGE plpgsql VOLATILE;
 
 
 /**
+* Move data from the oldest partition(s) to long term storage
+*
+* The lts_* columns in tab_root denote Long Term Storage of data for this
+* partition set. As such, this function provides the ability to move data
+* that has exceeded lts_threshold in age to a table identified by
+* lts_target. This can be a local archive table or an FDW equivalent. The
+* implication in either case, is that a separate partitioning entry or remote
+* archival process is in place to manage data moved to lts_target.
+*
+* Any partitions in this partition set that are older than lts_threshold
+* will be processed. This is done in case the archival process fell behind
+* for whatever reason. It's always safer to retain data that failed to
+* archive and try again later when issues have been resolved.
+*
+* @param string  Schema name of root table having data migrated.
+* @param string  Table Name of root table having data migrated.
+*/
+CREATE OR REPLACE FUNCTION archive_tier(
+  sSchema   VARCHAR,
+  sTable    VARCHAR
+)
+RETURNS VOID AS $$
+DECLARE
+  rRoot @extschema@.tier_root%ROWTYPE;
+  rPart @extschema@.tier_part%ROWTYPE;
+BEGIN
+  RAISE NOTICE 'Migrating Older % Data to LTS', sTable;
+
+  -- Retrieve the root definition 
+
+  SELECT INTO rRoot *
+    FROM @extschema@.tier_root
+   WHERE root_schema = sSchema
+     AND root_table = sTable;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Could not migrate (%). Not found!', quote_ident(sTable);
+  END IF;
+
+  -- Fetch the oldest partition definitions where the lts_retain root date
+  -- falls outside the check ranges. We'll need these to identify data being
+  -- copied to long term storage, and require a successful migration before
+  -- dropping the archived partition. This is looped in case the process
+  -- needs to process multiple pending partition archivals.
+
+  FOR rPart IN 
+      SELECT *
+        FROM @extschema@.tier_part
+       WHERE tier_root_id = rRoot.tier_root_id
+         AND check_stop < CURRENT_DATE - rRoot.lts_threshold
+       ORDER BY check_stop
+  LOOP
+    RAISE NOTICE ' * Archiving %', quote_ident(rPart.part_table);
+
+    -- The assumption here is that the lts_target is a fully qualified
+    -- FDW-based table so we don't have to concern ourselves with connection
+    -- management. If unset, it means the data isn't meant to be retained,
+    -- or that there is some other archival process in place. This is also
+    -- wrapped in an exception block so one bad insert doesn't derail the whole
+    -- archival process.
+
+    IF rRoot.lts_target IS NOT NULL THEN
+      RAISE NOTICE '   - Moving data to LTS.';
+      BEGIN
+        EXECUTE
+          'INSERT INTO ' || rRoot.lts_target || '
+           SELECT * FROM ' || quote_ident(rPart.part_schema) || '.' ||
+              quote_ident(rPart.part_table);
+      EXCEPTION WHEN OTHERS THEN
+        RAISE WARNING '  - Insertion failed: %.', SQLERRM;
+        CONTINUE;
+      END;
+    END IF;
+
+    RAISE NOTICE '   - Dropping archived partition.';
+    EXECUTE 'DROP TABLE ' || quote_ident(rPart.part_schema) || '.' ||
+            quote_ident(rPart.part_table);
+
+    -- Don't forget to unregister this partition!
+
+    DELETE FROM @extschema@.tier_part
+     WHERE tier_part_id = rPart.tier_part_id;
+  END LOOP;
+
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+
+/**
+* Archive data in all registered tables to long term storage
+*
+* This function is basically just a wrapper for archive_tier by walking
+* through all registered tables and archive data to long term storage
+* and/or drop expired partitions.
+*/
+CREATE OR REPLACE FUNCTION archive_all_tiers()
+RETURNS VOID AS $$
+DECLARE
+  sSchema VARCHAR;
+  sTable  VARCHAR;
+BEGIN
+
+  -- Simply loop through all known root tables. In all cases, we're just
+  -- passing the buck to archive_tier in an exception block to prevent
+  -- failed archivals from affecting others.
+
+  FOR sSchema, sTable IN
+      SELECT DISTINCT r.root_schema, r.root_table
+        FROM @extschema@.tier_root r
+        JOIN @extschema@.tier_part p USING (tier_root_id)
+       WHERE p.check_stop < CURRENT_DATE - r.lts_threshold
+  LOOP
+    BEGIN
+      PERFORM @extschema@.archive_tier(sSchema, sTable);
+
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'Problem encountered with %! Skipping.', sTable;
+      CONTINUE;
+    END;
+  END LOOP;
+
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+
+/**
 * Creates a new partition extension based on root table.
 *
 * This procedure will add one extent of part_period length to an existing
@@ -896,32 +1022,6 @@ BEGIN
   -- Finally, return the value of the setting, indicating it was accepted.
 
   RETURN new_val;
-
-END;
-$$ LANGUAGE PLPGSQL SECURITY DEFINER;
-
-
-/**
-* Do an atomic tier swap to prevent delete/insert bloat on tier tables
-*
-* 
-*
-* @param string  Schema name of root table having data migrated.
-* @param string  Table Name of root table having data migrated.
-* @param string  Optional specific partition to target, root table and
-*                partition prefix removed. Ex: 201304
-*/
-CREATE OR REPLACE FUNCTION swap_current_tier(
-  sSchema   VARCHAR,
-  sTable    VARCHAR
-)
-RETURNS VOID AS $$
-DECLARE
-  rRoot @extschema@.tier_root%ROWTYPE;
-  rPart @extschema@.tier_part%ROWTYPE;
-BEGIN
-
-  PERFORM 1;
 
 END;
 $$ LANGUAGE PLPGSQL SECURITY DEFINER;

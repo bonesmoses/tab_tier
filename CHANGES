@@ -1,4 +1,7 @@
+Version 0.2 - Thu, 19 Nov 2015 10:55:43 -0600
+  - Renamed to tab_tier to avoid collisions with official pg_* names.
+  - Added pre-index data copy optimization for day-level granularity.
+  - Added function to move really old data to long term storage.
+  - Added function to migrate to LTS for all registered tier roots.
 Version 0.1 - Fri, 20 Feb 2015 08:15:55 -0600
   - Initial release
-Version 0.2 - Wed, 04 Nov 2015 15:30:43 -0600
-  - Renamed to tab_tier to avoid collisions with official pg_* names.

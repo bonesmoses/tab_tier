@@ -14,18 +14,19 @@ In addition, we've provided functions to break existing tables into a partitione
 Installation
 ============
 
-To use tab_tier, it must first be installed. Simply execute these commands in the database that needs tier-based functionality:
+To use tab_tier, it must first be installed. Simply execute this commands in the database that needs tier-based functionality:
 
-    CREATE SCHEMA tier;
-    CREATE EXTENSION tab_tier WITH SCHEMA tier;
+    CREATE EXTENSION tab_tier;
 
-The `tier` schema isn't strictly necessary, but we recommend keeping namespaces isolated.
+This extension does not need to reside in the default tab_tier schema. To install it elsewhere, use these commands instead:
 
+    CREATE SCHEMA my_schema;
+    CREATE EXTENSION tab_tier SCHEMA my_schema;
 
 Usage
 =====
 
-The tab_tier extension works by maintaining a base table and all children based on some very simple constraints. Let's make a very basic schema and fake data now:
+The tab_tier extension works by maintaining a root table and all children based on some very simple constraints. Let's make a basic schema and fake data now:
 
     CREATE SCHEMA comm;
 
@@ -40,19 +41,22 @@ The tab_tier extension works by maintaining a base table and all children based 
            now() - (id || 'd')::INTERVAL
       FROM generate_series(1, 1000) a (id);
 
-That was easy! To use tab_tier, there are four basic steps:
+That was easy! To use tab_tier, there are five basic steps:
 
-* Registration
-* Bootstrapping
-* Migration
-* Maintenance
+1. Registration
+2. Bootstrapping
+3. Migration
+4. Archival
+5. Maintenance
+
+Only the last three of these will be repeated on a regular basis.
 
 ### Registration
 
 The registration step basically enters the table into the `tier_config` configuration table after applying a few basic sanity checks and defaults. Let's register the `comm.yell` table, then check the `tier_root` table's contents:
 
-    SELECT tier.register_tier_root('comm', 'yell', 'created_dt');
-    SELECT * FROM tier.tier_root;
+    SELECT tab_tier.register_tier_root('comm', 'yell', 'created_dt');
+    SELECT * FROM tab_tier.tier_root;
 
 The output from the select gives us a lot of information we didn't specify:
 
@@ -79,12 +83,12 @@ Next, we need to actually partition the sample table. Effectively, tab_tier will
 
 This function call should do the trick:
 
-    SELECT tier.bootstrap_tier_parts('comm', 'yell');
+    SELECT tab_tier.bootstrap_tier_parts('comm', 'yell');
 
 And we can check for the new partitions by checking `tier_part`:
 
     SELECT part_table, check_start, check_stop
-      FROM tier.tier_part
+      FROM tab_tier.tier_part
      ORDER BY part_table
      LIMIT 10;
 
@@ -107,11 +111,11 @@ There are clearly more partitions than listed above.
 
 ### Migration
 
-Once the partitions exist, we need to move the data. The tab_tier extension does not provide a function that does this all in one step, because a table being partitioned is likely very large. Waiting for the process to complete may take several hours and any error can derail the process.
+Once the partitions exist, we need to move the data. The tab_tier extension does not provide a function that does this all in one step, because a table being partitioned is likely very large. Waiting for the process to complete may take several hours (or even days) and any error can derail the process.
 
 However, we do provide a function to handle the data for each individual partition. Let's move the data in the January 2013 partition. How do we know the partition name? If `part_period` is less than a month, all partition names come in YYYYMMDD format, otherwise they are named with YYYYMM. So in this case, we will use '201301':
 
-    SELECT tier.migrate_tier_data('comm', 'yell', '201301');
+    SELECT tab_tier.migrate_tier_data('comm', 'yell', '201301');
 
     NOTICE:  Migrating Older yell Data
     NOTICE:   * Copying data to new tier.
@@ -135,10 +139,10 @@ Then we should check that the data was actually moved:
 As we can see, 31 rows were moved from the root table to the appropriate partition. Doing this for several partitions could be annoying though, so we suggest creating a script like this:
 
     COPY (
-      SELECT 'SELECT tier.migrate_tier_data(''comm'', ''yell'', ''' || 
+      SELECT 'SELECT tab_tier.migrate_tier_data(''comm'', ''yell'', ''' || 
              replace(part_table, 'yell_part_', '') || ''');' AS part_name
-        FROM tier.tier_part
-        JOIN tier.tier_root USING (tier_root_id)
+        FROM tab_tier.tier_part
+        JOIN tab_tier.tier_root USING (tier_root_id)
        WHERE root_schema = 'comm'
          AND root_table = 'yell'
        ORDER BY part_table
@@ -185,7 +189,7 @@ Let's see a few partitions first:
 
 Next, decouple the tables by sending **FALSE**:
 
-    SELECT tier.toggle_tier_partitions('comm', 'yell', FALSE);
+    SELECT tab_tier.toggle_tier_partitions('comm', 'yell', FALSE);
 
     SELECT c.relname AS child_name
       FROM pg_class c
@@ -199,31 +203,58 @@ Next, decouple the tables by sending **FALSE**:
 
 This makes it easier to make table alterations to the root table without disturbing child partitions.
 
+### Archival
+
+This is where the "tier" part of tab_tier comes in. Data that has surpassed `lts_threshold` in age can be relocated to longer-term storage that either resides locally, or on a remote system accessed via foreign tables named by `lts_target`. Once archived, old partitions are dropped. Like most partition systems, the primary benefit of this approach is that we avoid long `DELETE` times, and is especially useful for extremely large tables.
+
+Because not all systems require long term storage, this mechanism is entirely optional. To invoke it for our `comm.yell` table, simply call this function:
+
+    SELECT tab_tier.archive_tier('comm', 'yell');
+
+    NOTICE:  Migrating Older yell Data to LTS
+    NOTICE:   * Archiving yell_part_201510
+    NOTICE:     - Moving data to LTS
+    NOTICE:     - Dropping archived partition
+    ...
+
+There's also a related maintenance function to archive any applicable partition related to any table registered to tab_tier. It works in a very similar manner to `migrate_all_tiers`:
+
+    SELECT tab_tier.archive_all_tiers();
+
+    NOTICE:  Migrating Older yell Data to LTS
+    NOTICE:   * Archiving yell_part_201510
+    NOTICE:     - Moving data to LTS
+    NOTICE:     - Dropping archived partition
+    ...
+
+These functions are written such that any past archival failures will not prevent future data movement. Once any issues are resolved, all partitions beyond `lts_threshold` are candidates for archival.
 
 Configuration
 =============
 
 Configuring tab_tier has been simplified by the introduction of two functions designed to handle setting validation and other internals. To see all settings at once, execute this query to examine the contents of the `tier_config` table.
 
-    SELECT config_name, setting FROM tier.tier_config;
+    SELECT config_name, setting FROM tab_tier.tier_config;
 
 There are only a few settings currently that can be modified:
 
        config_name   |  setting   
     -----------------+------------
      root_retain     | 3 Months
+     lts_threshold   | 2 years
      part_period     | 1 Month
      part_tablespace | pg_default
 
-In this case, each partition will contain one month of data, and the root table will contain three months before data is moved during maintenance.
+In this case, each partition will contain one month of data, the root table will contain three months before data is moved during maintenance, and data will be retained in partitions for two years before being ushered into long term storage.
 
 To change settings, use the `set_tier_config` function as seen here:
 
-    SELECT tier.set_tier_config('root_retain', '6 Months');
+    SELECT tab_tier.set_tier_config('root_retain', '6 Months');
 
 Note that this function *does* check the validity of the setting in question. Here's what would happen if we passed a string that does not represent an interval:
 
-    postgres=# SELECT tier.set_tier_config('root_retain', 'cow');
+    SELECT tab_tier.set_tier_config('root_retain', 'cow');
+
     ERROR:  cow is not an interval!
 
 Here's a map of all currently recognized configuration settings:
@@ -232,9 +263,10 @@ Setting | Description
 --- | ---
 root_retain | A PostgreSQL INTERVAL of how long in days to keep data in the root table before moving it to one of the child partitions. Smallest granularity is one day. Default: 3 months.
 part_period | A PostgreSQL INTERVAL dictating the period of time each partition should represent. The smallest granularity is one day. Default: 1 month.
+lts_threshold | A PostgreSQL INTERVAL outlining how long data should reside within tier partitions before being moved to long term storage. Default: 2 years.
 part_tablespace | Which tablespace should new partitions inhabit? This is in the case tab_tier is used as a pseudo-archival system where a slower tier of storage is used for older partitioned data. Default: pg_default.
 
-While these settings are globally defined for the extension, they can also be changed on an individual basis by setting the `part_tablespace` column in the `tier_root` table for each registered root table.
+While these settings are globally defined for the extension, they can also be changed on an individual basis by setting the corresponding columns in the `tier_root` table for each registered root table.
 
 
 Tables
@@ -252,15 +284,11 @@ tier_part | Lists each known partition and its parent root table. Also included 
 Security
 ========
 
-Due to its low-level operation, tab_tier works best when executed by a database superuser. However, we understand this is undesirable in many cases. Certain tab_tier capabilities can be assigned to other users by calling `add_tier_admin`. For example:
+Due to its low-level operation, tab_tier works best when executed by a database superuser. However, we understand this is undesirable in many cases. Certain tab_tier capabilities can be assigned to other users by granting access to `tab_tier_role`. For example:
 
-    CREATE ROLE tier_role;
-    SELECT tier.add_tier_admin('tier_role');
-    GRANT tier_role TO some_user;
+    GRANT tab_tier_role TO some_user;
 
-The `tier_role` role can now call any of the tier management functions. These functions should always work, provided the user who created the `tier_manager` extension was a superuser. To revoke access, call the analog function:
-
-    SELECT tier.drop_tier_admin('tier_role');
+As with all grants, access can be removed via `REVOKE`.
 
 
 Build Instructions
