@@ -133,12 +133,17 @@ BEGIN
   END IF;
 
   -- Get the smallest known value from our source table for the date_column.
-  -- This will determine the date of our earliest partition.
+  -- This will determine the date of our earliest partition. If the root
+  -- table would have no partitions, just skip it.
 
   EXECUTE
     'SELECT min(' || quote_ident(rRoot.date_column) || ')
        FROM ' || quote_ident(sSchema) || '.' || quote_ident(sTable)
   INTO dStart;
+
+  IF dStart IS NULL THEN
+    RETURN;
+  END IF;
 
   -- Insert a "dummy" row into the tier partition tracking table, one
   -- part_period older than the oldest known date in the source. This record
