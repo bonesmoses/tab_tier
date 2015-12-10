@@ -785,11 +785,14 @@ $$ LANGUAGE plpgsql VOLATILE;
 * @param string  Table Name of root table having data migrated.
 * @param string  Optional specific partition to target, root table and
 *                partition prefix removed. Ex: 201304
+* @param boolean Should we analyze the parent and partition after movement?
+*                This is provided to optimize mass migrations.
 */
 CREATE OR REPLACE FUNCTION migrate_tier_data(
   sSchema   VARCHAR,
   sTable    VARCHAR,
-  sPart     VARCHAR DEFAULT NULL
+  sPart     VARCHAR DEFAULT NULL,
+  bAnalyze  BOOLEAN DEFAULT TRUE
 )
 RETURNS VOID AS $$
 DECLARE
@@ -895,11 +898,13 @@ BEGIN
   -- Last but not least, analyze our source table because we probably
   -- invalidated the last collected statistics.
 
-  RAISE NOTICE ' * Updating statistics.';
+  IF bAnalyze THEN
+    RAISE NOTICE ' * Updating statistics.';
 
-  EXECUTE 'ANALYZE ' || quote_ident(sSchema) || '.' || quote_ident(sTable);
-  EXECUTE 'ANALYZE ' || quote_ident(rPart.part_schema) || '.' || 
-          quote_ident(rPart.part_table);
+    EXECUTE 'ANALYZE ' || quote_ident(sSchema) || '.' || quote_ident(sTable);
+    EXECUTE 'ANALYZE ' || quote_ident(rPart.part_schema) || '.' || 
+            quote_ident(rPart.part_table);
+  END IF;
 
 END;
 $$ LANGUAGE plpgsql VOLATILE;
