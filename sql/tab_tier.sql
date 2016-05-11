@@ -27,6 +27,7 @@ BEGIN
 
   IF NOT FOUND THEN
     EXECUTE 'CREATE ROLE tab_tier_role';
+    EXECUTE 'GRANT USAGE ON SCHEMA @extschema@ TO tab_tier_role';
   END IF;
 END;
 $$ LANGUAGE plpgsql;
@@ -77,6 +78,7 @@ CREATE TABLE tier_part
   check_start   TIMESTAMP  NOT NULL,
   check_stop    TIMESTAMP  NOT NULL,
   is_default    BOOLEAN    NOT NULL  DEFAULT False,
+  is_archived   BOOLEAN    NOT NULL  DEFAULT False,
   created_dt    TIMESTAMP  NOT NULL,
   modified_dt   TIMESTAMP  NOT NULL
 );
@@ -211,7 +213,10 @@ BEGIN
                    r.root_retain))) /
                    extract(epoch from r.root_retain))::int + 1) AS gap
         FROM @extschema@.tier_root r
-        LEFT JOIN @extschema@.tier_part p USING (tier_root_id)
+        LEFT JOIN @extschema@.tier_part p ON (
+               p.tier_root_id = r.tier_root_id AND
+               NOT p.is_archived
+             )
        GROUP BY r.root_schema, r.root_table, r.root_retain, r.part_period
       HAVING coalesce(CURRENT_DATE - max(p.check_stop), r.root_retain) >
              r.root_retain - r.part_period - INTERVAL '1 day'
@@ -395,6 +400,7 @@ BEGIN
         FROM @extschema@.tier_part
        WHERE tier_root_id = rRoot.tier_root_id
          AND check_stop < CURRENT_DATE - rRoot.lts_threshold
+         AND NOT is_archived
        ORDER BY check_stop
   LOOP
     RAISE NOTICE ' * Archiving %', quote_ident(rPart.part_table);
@@ -419,14 +425,11 @@ BEGIN
       END;
     END IF;
 
-    RAISE NOTICE '   - Dropping archived partition.';
-    EXECUTE 'DROP TABLE ' || quote_ident(rPart.part_schema) || '.' ||
-            quote_ident(rPart.part_table);
-
-    -- Don't forget to unregister this partition!
-
-    DELETE FROM @extschema@.tier_part
+    RAISE NOTICE '   - Marking partition as archived.';
+    UPDATE @extschema@.tier_part
+       SET is_archived = True
      WHERE tier_part_id = rPart.tier_part_id;
+
   END LOOP;
 
 END;
@@ -456,12 +459,51 @@ BEGIN
         FROM @extschema@.tier_root r
         JOIN @extschema@.tier_part p USING (tier_root_id)
        WHERE p.check_stop < CURRENT_DATE - r.lts_threshold
+         AND NOT p.is_archived
   LOOP
     BEGIN
       PERFORM @extschema@.archive_tier(sSchema, sTable);
 
     EXCEPTION WHEN OTHERS THEN
       RAISE WARNING 'Problem encountered with %! Skipping.', sTable;
+      CONTINUE;
+    END;
+  END LOOP;
+
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+
+/**
+* Drop any tiers that were successfully moved to LTS
+*
+* Once a partition/tier has been moved into long term storage, we don't need
+* the copy locally anymore. This is a separate maintenance function so it
+* can run as object owners or superusers without being part of the archival
+* process itself. This way, the account doing the archival does not have to
+* own the tables themselves, or be a superuser.
+*/
+CREATE OR REPLACE FUNCTION drop_archived_tiers()
+RETURNS VOID AS $$
+DECLARE
+  sSchema VARCHAR;
+  sTable  VARCHAR;
+BEGIN
+
+  -- Simply loop through all archived partitions and invoke a drop command.
+
+  FOR sSchema, sTable IN
+      SELECT part_schema, part_table
+        FROM @extschema@.tier_part
+       WHERE is_archived
+  LOOP
+    BEGIN
+      RAISE NOTICE 'Dropping archived partition: %...', sTable;
+      EXECUTE 'DROP TABLE ' || quote_ident(sSchema) || '.' ||
+              quote_ident(sTable);
+
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'Could not drop %! Skipping.', sTable;
       CONTINUE;
     END;
   END LOOP;
@@ -528,6 +570,7 @@ BEGIN
   SELECT INTO dLast check_stop
     FROM @extschema@.tier_part
    WHERE tier_root_id = rRoot.tier_root_id
+     AND NOT is_archived
    ORDER BY check_stop DESC
    LIMIT 1;
 
@@ -681,7 +724,8 @@ BEGIN
   SELECT INTO oTarget (part_schema || '.' || part_table)::regclass
     FROM @extschema@.tier_part
    WHERE part_table = sTable || '_part_' || 
-                      regexp_replace(sPart, '\D', '', 'g');
+                      regexp_replace(sPart, '\D', '', 'g')
+     AND NOT is_archived;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Could not initialize %. Partition missing.',
@@ -823,11 +867,22 @@ BEGIN
   -- partition that's just slightly older than root_retain. Otherwise, we
   -- were asked to target a specific partition, and we want its information.
 
-  SELECT INTO rPart *
-    FROM @extschema@.tier_part
-   WHERE tier_root_id = rRoot.tier_root_id
-     AND part_table = sTable || '_part_' || 
-                        regexp_replace(sPart, '\D', '', 'g');
+  IF sPart IS NULL THEN
+    SELECT INTO rPart *
+      FROM @extschema@.tier_part
+     WHERE tier_root_id = rRoot.tier_root_id
+       AND check_start <= CURRENT_DATE - rRoot.root_retain
+       AND NOT is_archived
+     ORDER BY check_start DESC
+     LIMIT 1;
+  ELSE
+    SELECT INTO rPart *
+      FROM @extschema@.tier_part
+     WHERE tier_root_id = rRoot.tier_root_id
+       AND part_table = sTable || '_part_' || 
+                        regexp_replace(sPart, '\D', '', 'g')
+       AND NOT is_archived;
+  END IF;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Could not data shift (%). Partition missing.',
@@ -1077,6 +1132,7 @@ BEGIN
         JOIN @extschema@.tier_part p USING (tier_root_id)
        WHERE r.root_schema = sSchema
          AND r.root_table = sTable
+         AND NOT p.is_archived
   LOOP
     BEGIN
       EXECUTE 

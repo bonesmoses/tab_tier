@@ -205,7 +205,7 @@ This makes it easier to make table alterations to the root table without disturb
 
 ### Archival
 
-This is where the "tier" part of tab_tier comes in. Data that has surpassed `lts_threshold` in age can be relocated to longer-term storage that either resides locally, or on a remote system accessed via foreign tables named by `lts_target`. Once archived, old partitions are dropped. Like most partition systems, the primary benefit of this approach is that we avoid long `DELETE` times, and is especially useful for extremely large tables.
+This is where the "tier" part of tab_tier comes in. Data that has surpassed `lts_threshold` in age can be relocated to longer-term storage that either resides locally, or on a remote system accessed via foreign tables named by `lts_target`. Once archived, old partitions should dropped by calling `drop_archived_tiers`. Like most partition systems, the primary benefit of this approach is that we avoid long `DELETE` times, and is especially useful for extremely large tables.
 
 Because not all systems require long term storage, this mechanism is entirely optional. To invoke it for our `comm.yell` table, simply call this function:
 
@@ -266,7 +266,12 @@ part_period | A PostgreSQL INTERVAL dictating the period of time each partition 
 lts_threshold | A PostgreSQL INTERVAL outlining how long data should reside within tier partitions before being moved to long term storage. Default: 2 years.
 part_tablespace | Which tablespace should new partitions inhabit? This is in the case tab_tier is used as a pseudo-archival system where a slower tier of storage is used for older partitioned data. Default: pg_default.
 
-While these settings are globally defined for the extension, they can also be changed on an individual basis by setting the corresponding columns in the `tier_root` table for each registered root table.
+While these settings are globally defined for the extension, they can also be changed on an individual basis by setting the corresponding columns in the `tier_root` table for each registered root table. There are also some settings that apply only to `tier_root` and are listed below:
+
+Setting | Description
+--- | ---
+tier_proc | This function will be called instead of `migrate_tier_data` when `migrate_all_tiers` is used. Since the function is specific to a root table, it does not accept parameters. This may change in the future to accommodate generic user-defined migration functions.
+lts_target | Must be set for `archive_tier` to work. This should either be a local table, or a foreign table located in a long term storage archival instance. Archived data will be moved to this location when `archive_tier` is called. Please see documentation on [creating foreign tables](http://www.postgresql.org/docs/current/static/sql-createforeigntable.html) for more information.
 
 
 Tables
