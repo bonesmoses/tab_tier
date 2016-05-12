@@ -545,6 +545,7 @@ DECLARE
   sPartName VARCHAR;
   sIndex VARCHAR;
   sMask VARCHAR;
+  sOwner VARCHAR;
 BEGIN
 
   -- Retrieve the root definition. We'll need that to define certain
@@ -666,6 +667,18 @@ BEGIN
     END LOOP;
 
   END IF;
+
+  -- Now we have to move the table ownership. Doing otherwise would be
+  -- incredibly inconsistent.
+
+  SELECT INTO sOwner tableowner
+    FROM pg_tables
+   WHERE schemaname = sSchema
+     AND tablename = sTable;
+
+  EXECUTE ' 
+    ALTER TABLE ' || sSchema || '.' || sPartName || '
+    OWNER TO ' || sOwner;
 
   -- Last but not least, copy the grants of our parent table.
 
