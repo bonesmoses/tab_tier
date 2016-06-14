@@ -109,10 +109,12 @@ ALTER TABLE tier_part
 *
 * @param string  Schema name of root table to bootstrap.
 * @param string  Table Name of root table to bootstrap.
+* @param boolean Create partitions even for future dates.
 */
 CREATE OR REPLACE FUNCTION bootstrap_tier_parts(
   sSchema   VARCHAR,
-  sTable    VARCHAR
+  sTable    VARCHAR,
+  bFuture   BOOLEAN
 )
 RETURNS VOID AS $$
 DECLARE
@@ -120,6 +122,7 @@ DECLARE
 
   dStart DATE;
   dCurrent DATE;
+  dFinal DATE := CURRENT_DATE;
 BEGIN
 
   -- Retrieve the root definition. That will define all of our crazy work
@@ -147,6 +150,17 @@ BEGIN
     RETURN;
   END IF;
 
+  -- If we're asked to create future partitions, replace the stopping date
+  -- with the maximum value found in the root table.
+
+  IF bFuture THEN
+      EXECUTE
+        'SELECT max(' || quote_ident(rRoot.date_column) || ')
+           FROM ' || quote_ident(sSchema) || '.' || quote_ident(sTable)
+      INTO dFinal;
+      dFinal = dFinal - rRoot.part_period;
+  END IF;
+
   -- Insert a "dummy" row into the tier partition tracking table, one
   -- part_period older than the oldest known date in the source. This record
   -- will create an artificial time gap that we can use extend_tier_root
@@ -164,7 +178,7 @@ BEGIN
 
   dCurrent = dStart;
 
-  WHILE dCurrent <= CURRENT_DATE - rRoot.root_retain + rRoot.part_period
+  WHILE dCurrent <= dFinal - rRoot.root_retain + rRoot.part_period
   LOOP
     PERFORM @extschema@.extend_tier_root(sSchema, sTable);
     dCurrent = dCurrent + rRoot.part_period;
@@ -281,15 +295,15 @@ BEGIN
     -- truncated.
 
     sIndex = rIndex.indtype || 'dx_' || 
-             regexp_replace(sTarget, E'([a-z]{1,4})[a-z]*?_?',
-                            E'\\1_', 'ig') || nCounter;
+             regexp_replace(sTarget, '([a-z]{1,4})[a-z]*?_?',
+                            '\1_', 'ig') || nCounter;
 
     rIndex.indexdef = regexp_replace(rIndex.indexdef,
-      E'INDEX [\\w\\.]+ ',
-      E'INDEX ' || sIndex || ' ');
+      'INDEX [\w\.]+ ',
+      'INDEX ' || sIndex || ' ');
 
     rIndex.indexdef = regexp_replace(rIndex.indexdef,
-      E' ON [\\w\\.]+ ',
+      ' ON [\w\.]+ ',
       ' ON ' || sNSPTarget || '.' || sTarget || ' ');
 
     EXECUTE rIndex.indexdef;
@@ -689,6 +703,96 @@ $$ LANGUAGE plpgsql VOLATILE;
 
 
 /**
+* Migrate data in all registered tier partitions at once.
+*
+* Instead of flushing a single root table into all existing partitions,
+* flush all known tables. This is a time-consuming and potentially
+* dangerious action, and we suggest not using this function unless 
+* necessary and with a very stable database.
+*
+* This function is primarily useful if data in the root table somehow
+* got left behind, either by missing runs of the migration function, or
+* past failures.
+*/
+CREATE OR REPLACE FUNCTION flush_all_tiers()
+RETURNS VOID AS $$
+DECLARE
+  rPart @extschema@.tier_root%ROWTYPE;
+BEGIN
+
+  -- Simply loop through all known root tables.
+  -- In all cases, call the flush routine. That routine will push data to
+  -- all existing partitions from the root table.
+
+  FOR rPart IN SELECT * FROM @extschema@.tier_root
+  LOOP
+    BEGIN
+      PERFORM @extschema@.flush_tier_data(rPart.root_schema,
+        rPart.root_table);
+
+    -- If one tier barfs, there's no reason *all* of them should.
+
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'Problem encountered with %! Skipping.', rPart.root_table;
+      CONTINUE;
+    END;
+
+  END LOOP;
+
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+
+/**
+* Flush data to partitions for a specified root table.
+*
+* Given a root table, identify all non-archived partitions and invoke a
+* data migration. Not only can this be used as a followup to the bootstrap
+* routine, but can work as a full flush of the root table.
+*
+* This function is primarily useful if data in the root table somehow
+* got left behind, either by missing runs of the migration function, or
+* past failures.
+*
+* @param string  Schema name of root table having data flushed.
+* @param string  Table Name of root table having data flushed.
+*/
+CREATE OR REPLACE FUNCTION flush_tier_data(
+  sSchema   VARCHAR,
+  sTable    VARCHAR
+)
+RETURNS VOID AS $$
+DECLARE
+  sPart VARCHAR;
+BEGIN
+
+  -- Given the root table, snag all non-archived partitions. We can simply
+  -- call the basic migration function and let it do all of the heavy lifting.
+
+  FOR sPart IN SELECT replace(p.part_table, sTable || '_part_', '')
+                 FROM tab_tier.tier_root r
+                 JOIN tab_tier.tier_part p USING (tier_root_id)
+                WHERE root_schema = sSchema
+                  AND root_table = sTable
+                  AND NOT is_archived
+  LOOP
+    BEGIN
+      PERFORM @extschema@.migrate_tier_data(sSchema, sTable, sPart, FALSE, TRUE);
+
+    -- If one partition barfs, there's no reason *all* of them should.
+
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'Problem encountered with %! Skipping.', rPart.root_table;
+      CONTINUE;
+    END;
+
+  END LOOP;
+
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+
+/**
  * Retrieve a Configuration Setting from tier_config.
  *
  * @param config_key  Name of the configuration setting to retrieve.
@@ -843,13 +947,17 @@ $$ LANGUAGE plpgsql VOLATILE;
 * @param string  Optional specific partition to target, root table and
 *                partition prefix removed. Ex: 201304
 * @param boolean Should we analyze the parent and partition after movement?
-*                This is provided to optimize mass migrations.
+*                This is provided to optimize mass migrations. Default True.
+* @param boolean Should we include all data within the partition's boundaries?
+*                Normally, we don't include data within the root retention
+*                window, so it stays in the root table. Default False.
 */
-CREATE OR REPLACE FUNCTION migrate_tier_data(
+CREATE OR REPLACE FUNCTION @extschema@.migrate_tier_data(
   sSchema   VARCHAR,
   sTable    VARCHAR,
   sPart     VARCHAR DEFAULT NULL,
-  bAnalyze  BOOLEAN DEFAULT TRUE
+  bAnalyze  BOOLEAN DEFAULT TRUE,
+  bAll      BOOLEAN DEFAULT FALSE
 )
 RETURNS VOID AS $$
 DECLARE
@@ -857,6 +965,7 @@ DECLARE
   rPart @extschema@.tier_part%ROWTYPE;
 
   sColList VARCHAR;
+  sSQL VARCHAR;
   nCount BIGINT;
 BEGIN
 
@@ -916,7 +1025,7 @@ BEGIN
    WHERE a.attrelid = (sSchema || '.' || sTable)::regclass
      AND a.attnum > 0;
 
-  EXECUTE
+  sSQL =
     'INSERT INTO ' || quote_ident(rPart.part_schema) || '.' ||
                       quote_ident(rPart.part_table) || 
             ' ( ' || sColList || ', snapshot_dt)
@@ -925,9 +1034,15 @@ BEGIN
       WHERE ' || quote_ident(rRoot.date_column) || ' >= ' ||
                  quote_literal(rPart.check_start::text) || '
         AND ' || quote_ident(rRoot.date_column) || ' < ' ||
-                 quote_literal(rPart.check_stop::text) || '
+                 quote_literal(rPart.check_stop::text);
+
+  IF NOT bALL THEN
+    sSQL = sSQL || '
         AND ' || quote_ident(rRoot.date_column) || ' < CURRENT_DATE - ' ||
                  quote_literal(rRoot.root_retain::text) || '::interval';
+  END IF;
+
+  EXECUTE sSQL;
 
   -- Here is where we'll insert an optimization shortcut. If all the rows
   -- we copied are the *only* rows to move, we can truncate the root table
@@ -952,15 +1067,22 @@ BEGIN
   ELSE 
     RAISE NOTICE ' * Deleting data from old tier.';
 
-    EXECUTE
+    sSQL =
       'DELETE FROM
          ONLY ' || quote_ident(sSchema) || '.' || quote_ident(sTable) || '
         WHERE ' || quote_ident(rRoot.date_column) || ' >= ' ||
                    quote_literal(rPart.check_start::text) || '
           AND ' || quote_ident(rRoot.date_column) || ' < ' ||
-                   quote_literal(rPart.check_stop::text) || '
-          AND ' || quote_ident(rRoot.date_column) || ' < CURRENT_DATE - ' ||
-                   quote_literal(rRoot.root_retain::text) || '::interval';
+                   quote_literal(rPart.check_stop::text);
+
+    IF NOT bALL THEN
+      sSQL = sSQL || '
+            AND ' || quote_ident(rRoot.date_column) || ' < CURRENT_DATE - ' ||
+                     quote_literal(rRoot.root_retain::text) || '::interval';
+    END IF;
+
+    EXECUTE sSQL;
+
   END IF;
 
   -- Last but not least, analyze our source table because we probably

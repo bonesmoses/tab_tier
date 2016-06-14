@@ -109,6 +109,8 @@ We used a limit because the sample data we used constitutes almost three years o
 
 There are clearly more partitions than listed above.
 
+Some use cases include the possibility that events or data points will be dated in the future. To accommodate these scenarios, the `bootstrap_tier_parts` function has one last parameter that, if true, tells it to create partitions even for future dates. Normally, partitions end one retention interval before the current date.
+
 ### Migration
 
 Once the partitions exist, we need to move the data. The tab_tier extension does not provide a function that does this all in one step, because a table being partitioned is likely very large. Waiting for the process to complete may take several hours (or even days) and any error can derail the process.
@@ -148,7 +150,7 @@ As we can see, 31 rows were moved from the root table to the appropriate partiti
        ORDER BY part_table
     ) TO '/tmp/move_parts.sql';
 
-Then, execute the resulting script with `psql` or pgAdmin. This way if the process gets interrupted or might take too long, it can be performed in sections or easily resumed. If there is enough demand, we may provide a method of automating this process in a future version.
+Then, execute the resulting script with `psql` or pgAdmin. This way if the process gets interrupted or might take too long, it can be performed in sections or easily resumed. If this is not an overly problematic concern, feel free to substitute the `flush_tier_data` function discussed below; it performs the same data redistribution as a single transactional operation.
 
 ### Maintenance
 
@@ -228,6 +230,15 @@ There's also a related maintenance function to archive any applicable partition 
     ...
 
 These functions are written such that any past archival failures will not prevent future data movement. Once any issues are resolved, all partitions beyond `lts_threshold` are candidates for archival.
+
+### Flushing
+
+If the partition maintenance functions were not called over a large period of time, it's possible unwanted data will remain in the root table. This is because the default migration system only targets the most recent partition as an optimization step. In these cases, it may be beneficial to force tab_tier to process all rows in a root table, for all existing partitions. The `flush_tier_data` function was provided for this task. Like `migrate_tier_data`, simply specify which root schema and table to target, and tab_tier will attempt to flush all rows from the root table into applicable partitions.
+
+Because this function migrates *all* data from the root table, if called immediately following `bootstrap_tier_parts`, it will relocate data to all new partitions as a single monumental transaction. We strongly recommend against using this function for that purpose on extremely large tables, as the full migration will likely require hours, and any error will purge all previous progress.
+
+Similarly, there is an analogous function that will invoke this process for all root tables. The `flush_all_tiers` function exists to save time and invocation complexity, calling `flush_tier_data` on all registered root tables. Again, ideally this should be considered a maintenance or clean up function, not a reorganization step following a registration bootstrap.
+
 
 Configuration
 =============
@@ -332,6 +343,12 @@ Dependencies
 ============
 
 The `tab_tier` extension has no dependencies other than PostgreSQL.
+
+
+Compatibility
+=============
+
+This extension should work with Postgres 9.1 and above. If this is not the case, please inform us so we can make necessary corrections.
 
 
 Copyright and License
