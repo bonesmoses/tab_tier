@@ -2,9 +2,18 @@
     "name": "tab_tier",
     "abstract": "Extension for managing date-based job-driven table partitions",
     "description": "The tab_tier is an extension for managing date-based table partitions. Unlike most existing systems that use triggers to automatically relocate data, this extension relies on a job to call a maintenance procedure that moves applicable data when invoked. Combined with an allocation function that provisions new partitions, this module can handle up to daily granularity.",
+    "tags": ["partitioning", "archival"],
     "version": "1.1.0",
-    "maintainer": "sthomas@peak6.com",
+    "maintainer": "Shaun M. Thomas <sthomas@peak6.com>",
     "license": "apache_2_0",
+    "prereqs": {
+      "runtime": {
+        "requires": {
+          "PostgreSQL": "9.1.0",
+          "plpgsql": 0
+        }
+      }
+    },
     "provides": {
         "tab_tier": {
             "abstract": "Extension for managing date-based job-driven table partitions",
@@ -13,9 +22,20 @@
             "version": "1.1.0"
         }
     },
-    "release_status": "unstable",
+    "resources": {
+        "bugtracker": {
+            "web": "http://github.com/peak6/tab_tier/issues"
+        },
+        "repository": {
+            "url":  "https://github.com/peak6/tab_tier.git",
+            "web":  "https://github.com/peak6/tab_tier",
+            "type": "git"
+        }
+    },
 
-    "generated_by": "sthomas@peak6.com",
+    "release_status": "stable",
+
+    "generated_by": "Shaun M. Thomas <sthomas@peak6.com>",
 
     "meta-spec": {
         "version": "1.0.0",
