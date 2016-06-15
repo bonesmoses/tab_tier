@@ -2,7 +2,7 @@
     "name": "tab_tier",
     "abstract": "Extension for managing date-based job-driven table partitions",
     "description": "The tab_tier is an extension for managing date-based table partitions. Unlike most existing systems that use triggers to automatically relocate data, this extension relies on a job to call a maintenance procedure that moves applicable data when invoked. Combined with an allocation function that provisions new partitions, this module can handle up to daily granularity.",
-    "version": "1.0",
+    "version": "1.1",
     "maintainer": "sthomas@peak6.com",
     "license": "apache_2",
     "provides": {
@@ -10,7 +10,7 @@
             "abstract": "Extension for managing date-based job-driven table partitions",
             "file": "sql/tab_tier.sql",
             "docfile": "doc/tab_tier.md",
-            "version": "1.0"
+            "version": "1.1"
         }
     },
     "release_status": "unstable",
