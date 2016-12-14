@@ -15,11 +15,19 @@ INSERT INTO tier_test
 SELECT a.id, '2016-12-15'::DATE - (a.id::TEXT || 'd')::INTERVAL
   FROM generate_series(1, 200) a (id);
 
-SELECT tab_tier.register_tier_root('tiertest', 'tier_test', 'dt');
-SELECT tab_tier.bootstrap_tier_parts('tiertest', 'tier_test');
+UPDATE tab_tier.tier_part
+   SET is_archived = TRUE
+ WHERE check_start < '2016-12-15'::DATE - INTERVAL '5 months';
 
-SELECT tablename
+SELECT tab_tier.drop_archived_tiers();
+
+SELECT count(*)
+  FROM tab_tier.tier_part
+ WHERE part_schema = 'tiertest';
+
+SELECT count(*)
   FROM pg_tables
- WHERE schemaname = 'tiertest';
+ WHERE schemaname = 'tiertest'
+   AND tablename LIKE '%\_part\_%';
 
 ROLLBACK;

@@ -1,5 +1,5 @@
 # tab_tier extension
 comment = 'Extension for managing date-based job-driven table partitions.'
-default_version = '1.1'
+default_version = '1.2'
 relocatable = false
 schema = tab_tier

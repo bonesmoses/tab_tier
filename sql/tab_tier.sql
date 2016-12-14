@@ -109,12 +109,12 @@ ALTER TABLE tier_part
 *
 * @param string  Schema name of root table to bootstrap.
 * @param string  Table Name of root table to bootstrap.
-* @param boolean Create partitions even for future dates.
+* @param boolean Create partitions even for future dates. Default False.
 */
 CREATE OR REPLACE FUNCTION bootstrap_tier_parts(
   sSchema   VARCHAR,
   sTable    VARCHAR,
-  bFuture   BOOLEAN
+  bFuture   BOOLEAN DEFAULT FALSE
 )
 RETURNS VOID AS $$
 DECLARE
@@ -151,14 +151,15 @@ BEGIN
   END IF;
 
   -- If we're asked to create future partitions, replace the stopping date
-  -- with the maximum value found in the root table.
+  -- with the maximum value found in the root table after adding the 
+  -- retention period to counter the assumed retention window.
 
   IF bFuture THEN
       EXECUTE
         'SELECT max(' || quote_ident(rRoot.date_column) || ')
            FROM ' || quote_ident(sSchema) || '.' || quote_ident(sTable)
       INTO dFinal;
-      dFinal = dFinal - rRoot.part_period;
+      dFinal = dFinal + rRoot.root_retain;
   END IF;
 
   -- Insert a "dummy" row into the tier partition tracking table, one
@@ -510,11 +511,16 @@ BEGIN
       SELECT part_schema, part_table
         FROM @extschema@.tier_part
        WHERE is_archived
+         FOR UPDATE
   LOOP
     BEGIN
       RAISE NOTICE 'Dropping archived partition: %...', sTable;
       EXECUTE 'DROP TABLE ' || quote_ident(sSchema) || '.' ||
               quote_ident(sTable);
+
+      DELETE FROM @extschema@.tier_part
+       WHERE part_schema = sSchema
+         AND part_table = sTable;
 
     EXCEPTION WHEN OTHERS THEN
       RAISE WARNING 'Could not drop %! Skipping.', sTable;

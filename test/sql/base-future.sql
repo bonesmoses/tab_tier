@@ -16,7 +16,7 @@ SELECT a.id, '2016-12-15'::DATE - (a.id::TEXT || 'd')::INTERVAL
   FROM generate_series(1, 200) a (id);
 
 SELECT tab_tier.register_tier_root('tiertest', 'tier_test', 'dt');
-SELECT tab_tier.bootstrap_tier_parts('tiertest', 'tier_test');
+SELECT tab_tier.bootstrap_tier_parts('tiertest', 'tier_test', TRUE);
 
 SELECT tablename
   FROM pg_tables

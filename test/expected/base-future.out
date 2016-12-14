@@ -12,7 +12,7 @@ SELECT tab_tier.register_tier_root('tiertest', 'tier_test', 'dt');
  
 (1 row)
 
-SELECT tab_tier.bootstrap_tier_parts('tiertest', 'tier_test');
+SELECT tab_tier.bootstrap_tier_parts('tiertest', 'tier_test', TRUE);
  bootstrap_tier_parts 
 ----------------------
  
@@ -29,6 +29,9 @@ SELECT tablename
  tier_test_part_201607
  tier_test_part_201608
  tier_test_part_201609
-(6 rows)
+ tier_test_part_201610
+ tier_test_part_201611
+ tier_test_part_201612
+(9 rows)
 
 ROLLBACK;
